@@ -15,9 +15,12 @@ jobs:
           java-version: 21
       - name: Prepare web files
         run: |
-          test -f index.html || (echo "index.html not at repo root" && exit 1)
+          test -f dev.html || (echo "dev.html not found" && exit 1)
           mkdir www
           rsync -a --exclude='.git' --exclude='.github' --exclude='www' ./ www/
+          cp dev.html www/index.html
+          sed -i 's#</body>#<script src="js/mods.js"></script></body>#' www/index.html
+          grep -q 'js/mods.js' www/index.html || (echo "could not add mods.js" && exit 1)
       - name: Set up Capacitor
         run: |
           npm init -y

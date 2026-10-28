@@ -23,6 +23,7 @@ jobs:
           npm init -y
           npm i @capacitor/core @capacitor/cli @capacitor/android
           npx cap init PokeSurvivor com.example.pokesurvivor --web-dir=www
+          node -e "const fs=require('fs');const f='capacitor.config.json';const c=JSON.parse(fs.readFileSync(f));c.server={hostname:'pokesurvivor.local',androidScheme:'https'};fs.writeFileSync(f,JSON.stringify(c,null,2))"
           npx cap add android
           npx cap sync android
       - name: Build APK

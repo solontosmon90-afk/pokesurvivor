@@ -1,6 +1,8 @@
 name: Build APK
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,10 +19,22 @@ jobs:
         run: |
           test -f dev.html || (echo "dev.html not found" && exit 1)
           mkdir www
-          rsync -a --exclude='.git' --exclude='.github' --exclude='www' ./ www/
+          rsync -a --exclude='.git' --exclude='.github' --exclude='www' --exclude='debug.keystore' ./ www/
           cp dev.html www/index.html
           sed -i 's#</body>#<script src="js/mods.js"></script></body>#' www/index.html
           grep -q 'js/mods.js' www/index.html || (echo "could not add mods.js" && exit 1)
+      - name: Fixed signing key
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "build-bot"
+            git config user.email "build-bot@users.noreply.github.com"
+            git add -f debug.keystore
+            git commit -m "Add signing key"
+            git push || echo "could not save the key to the repo"
+          fi
+          mkdir -p ~/.android
+          cp debug.keystore ~/.android/debug.keystore
       - name: Set up Capacitor
         run: |
           npm init -y

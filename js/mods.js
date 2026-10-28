@@ -1,8 +1,8 @@
 /* mods.js — modificadores con deslizadores (sólo tu copia local) */
+window.G = window.G || {}; // Ensures G exists so the script won't crash
+
 G.Mods = (() => {
   const KEY = 'ps.mods';
-  // Cada deslizador mueve a la vez una recompensa (gain) y su coste (cost).
-  // Para cambiar el equilibrio, edita los "base". Más pares: añade una entrada.
   const PAIRS = [
     { id: 'treasure', title: 'Treasure vs Toughness', min: -4, max: 8,
       gain: { key: 'coins', label: 'Coin drops', base: 1.2 },
@@ -40,13 +40,15 @@ G.Mods = (() => {
   let panel = null, rows = [];
 
   function build() {
-    panel = el('div', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:100000;display:none;align-items:center;justify-content:center;padding:12px;background:rgba(10,20,48,.94);color:#fff;font-size:15px;line-height:1.4;font-family:inherit');
-    // Que el juego no se coma los toques ni las teclas de este panel.
+    panel = el('div', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:999999;display:none;align-items:center;justify-content:center;padding:12px;background:rgba(10,20,48,.94);color:#fff;font-size:15px;line-height:1.4;font-family:inherit');
+    
     for (const ev of ['touchstart', 'touchmove', 'touchend', 'pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mouseup', 'keydown', 'keyup'])
       panel.addEventListener(ev, e => e.stopPropagation(), { passive: true });
+    
     const box = el('div', 'width:100%;max-width:460px;max-height:100%;overflow:auto;background:#0f1d3d;border:2px solid #ffd84a;border-radius:12px;padding:14px 16px;box-sizing:border-box');
     box.append(el('h2', 'margin:0 0 6px;color:#ffd84a', 'Modifiers'));
     box.append(el('p', 'margin:0 0 4px;color:#b8c4e0', 'Slide right for more reward and a harder game, left for easier and less reward. Applies from your next run.'));
+    
     rows = PAIRS.map(p => {
       const wrap = el('div', 'margin:16px 0');
       const head = el('div', 'display:flex;justify-content:space-between;font-weight:700;color:#ffd84a');
@@ -68,6 +70,7 @@ G.Mods = (() => {
       refresh();
       return refresh;
     });
+
     const btns = el('div', 'display:flex;gap:8px;margin-top:8px');
     const reset = el('button', btnCss('#33436b', '#fff'), 'Reset');
     const close = el('button', btnCss('#ffd84a', '#0a1430'), 'Close');
@@ -85,21 +88,21 @@ G.Mods = (() => {
     panel.style.display = 'flex';
   }
 
-  // Botón en el menú principal (se añade cuando el menú aparece por primera vez).
-  function addButton() {
-    if (document.getElementById('mods-open')) return;
-    const list = document.querySelector('#scr-menu .menu-list');
-    if (!list) return;
-    const b = el('button');
-    b.id = 'mods-open'; b.type = 'button'; b.className = 'menu-item';
-    b.append('Modifiers', el('small', '', 'Trade rewards for difficulty'));
-    b.addEventListener('click', e => { e.stopPropagation(); open(); });
-    list.appendChild(b);
+  // Floating button added to top-right corner on screen load
+  function addFloatingButton() {
+    if (document.getElementById('mods-float-btn')) return;
+    const btn = el('button', 'position:fixed;top:12px;right:12px;z-index:999990;padding:8px 14px;background:#ffd84a;color:#0a1430;font-weight:bold;border:none;border-radius:20px;box-shadow:0 2px 8px rgba(0,0,0,0.4);font-size:14px;cursor:pointer;');
+    btn.id = 'mods-float-btn';
+    btn.textContent = '⚙️ MODS';
+    btn.addEventListener('click', e => { e.stopPropagation(); open(); });
+    document.body.appendChild(btn);
   }
-  setInterval(() => {
-    const m = document.getElementById('scr-menu');
-    if (m && !m.classList.contains('hidden')) addButton();
-  }, 500);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', addFloatingButton);
+  } else {
+    addFloatingButton();
+  }
 
   return { v, open, PAIRS };
 })();

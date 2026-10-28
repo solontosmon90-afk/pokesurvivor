@@ -14,13 +14,15 @@ G.Spawner = (() => {
   // Tope de enemigos a la vez (antes 420: con tantos se ralentizaba). Cuando
   // se llega al tope, los que siguen saliendo son "élite" (más vida, daño y
   // experiencia), así la dificultad no baja.
-  const CAP = 64, ELITE_FROM = 0.85;
+  const BASE_CAP = 64, ELITE_FROM = 0.85;
+  const capNow = () => Math.round(BASE_CAP * (G.Mods ? G.Mods.v('spawn') : 1));
+  let CAP = BASE_CAP;
   // Menos Pokémon pero más fuertes (la pantalla no se satura): salen ~24% de
   // los de antes, cada uno con más vida, daño y experiencia.
   const DENSITY = 0.24, DMG_K = 2.4, XP_K = 5.6;
   // La resistencia extra crece con la run: al principio ×3,3 y hasta ×5
   // hacia el minuto 6, cuando ya tienes ataques para tumbarlos.
-  const hpK = t => 3.3 + Math.min(1.7, t / 210);
+  const hpK = t => (3.3 + Math.min(1.7, t / 210)) * (G.Mods ? G.Mods.v('enemyHp') : 1);
   const SHINY_RATE = 1 / 4096;
   let acc = 0, bossIdx = 0, surgeT = 32, announce = null, announceT = 0, preloadT = 0;
   let forceShiny = 0;           // para pruebas: los N próximos salen shiny
@@ -33,7 +35,7 @@ G.Spawner = (() => {
 
   /** Enemigos por segundo según el minuto de la run. */
   function rate(t) {
-    return (1.6 + t * 0.028 + Math.pow(t / 60, 1.6) * 0.5) * DENSITY;
+     return (1.6 + t * 0.028 + Math.pow(t / 60, 1.6) * 0.5) * DENSITY * (G.Mods ? G.Mods.v('spawn') : 1);
   }
 
   /** Radio de "fuera de la vista": el de la cámara, o más si alguien la tiene alejada (Luminosfera). */
@@ -137,6 +139,7 @@ G.Spawner = (() => {
   /** @param who  el jugador o la lista de jugadores (cooperativo) */
   function update(dt, who, t) {
     players = Array.isArray(who) ? who : [who];
+    CAP = capNow();
     if (announceT > 0) announceT -= dt;
     // En la arena de la grieta no sale nada más (y el reloj de jefes espera).
     // En la Sentencia de Arceus, sólo sus legendarios (systems/judgment.js).

@@ -74,6 +74,7 @@ G.Pickups = (() => {
 
   /** @param plain  sólo la experiencia (los legendarios de la Sentencia de Arceus) */
   function dropXp(x, y, value, boss = false, legend = false, plain = false) {
+    if (G.Mods) value = Math.max(1, Math.round(value * G.Mods.v('xp')));
     if (boss) {
       // Los jefes revientan en un montón de orbes grandes + recompensas.
       for (let i = 0; i < 14; i++) {
@@ -103,6 +104,7 @@ G.Pickups = (() => {
 
   /** Suelta un objeto suelto: 'heal' | 'magnet' | 'bomb' | 'coin'. */
   function drop(kind, x, y, value = 0) {
+    if (kind === 'coin' && G.Mods) value = Math.max(1, Math.round(value * G.Mods.v('coins')));
     push(orb(kind, x, y, value));
   }
 

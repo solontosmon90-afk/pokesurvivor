@@ -19,10 +19,12 @@ jobs:
         run: |
           test -f dev.html || (echo "dev.html not found" && exit 1)
           mkdir www
-          rsync -a --exclude='.git' --exclude='.github' --exclude='www' --exclude='debug.keystore' ./ www/
+          rsync -a --exclude='.git' --exclude='.github' --exclude='www' --exclude='debug.keystore' --exclude='android-extra' ./ www/
           cp dev.html www/index.html
-          sed -i 's#</body>#<script src="js/mods.js"></script></body>#' www/index.html
+          sed -i "s/script-src 'self'/script-src 'self' 'unsafe-inline'/" www/index.html
+          sed -i 's#</body>#<script src="js/mods.js"></script><script src="js/lan.js"></script></body>#' www/index.html
           grep -q 'js/mods.js' www/index.html || (echo "could not add mods.js" && exit 1)
+          grep -q 'js/lan.js' www/index.html || (echo "could not add lan.js" && exit 1)
       - name: Fixed signing key
         run: |
           if [ ! -f debug.keystore ]; then
@@ -43,6 +45,13 @@ jobs:
           node -e "const fs=require('fs');const f='capacitor.config.json';const c=JSON.parse(fs.readFileSync(f));c.server={hostname:'pokesurvivor.local',androidScheme:'https'};fs.writeFileSync(f,JSON.stringify(c,null,2))"
           npx cap add android
           npx cap sync android
+      - name: Add LAN plugin
+        run: |
+          MAIN=$(find android/app/src/main/java -name MainActivity.java | head -n 1)
+          test -n "$MAIN" || (echo "MainActivity.java not found" && exit 1)
+          D=$(dirname "$MAIN")
+          cp android-extra/PsLanPlugin.java "$D/PsLanPlugin.java"
+          cp android-extra/MainActivity.java "$D/MainActivity.java"
       - name: Build APK
         run: |
           cd android

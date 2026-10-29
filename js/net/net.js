@@ -380,7 +380,7 @@ G.Net = (() => {
   }
 
   return {
-    open, close, syncMembers, send, toHost, broadcast,
+    open, close, syncMembers, send, toHost, broadcast, deliver, emitPeer,
     on(fn) { handlers.add(fn); }, off(fn) { handlers.delete(fn); },
     onPeer(fn) { peerHandlers.add(fn); },
     mode(u) { const p = peers.get(u); return p ? p.mode : 'closed'; },

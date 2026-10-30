@@ -2,18 +2,29 @@
 (() => {
   const PORT = 8765, MAX = 4;
   const Cap = window.Capacitor;
-  const native = !!(Cap && Cap.registerPlugin && Cap.isNativePlatform && Cap.isNativePlatform());
-  const Lan = native ? Cap.registerPlugin('PsLan') : null;
+  const native = !!(Cap && ((Cap.isNativePlatform && Cap.isNativePlatform()) || (Cap.getPlatform && Cap.getPlatform() === 'android')));
+  let base = null;
+  try {
+    if (native) base = (Cap.Plugins && Cap.Plugins.PsLan) || (Cap.registerPlugin ? Cap.registerPlugin('PsLan') : null);
+  } catch (e) { base = null; }
+  const call = (m, o) => { try { return Promise.resolve(base[m](o)); } catch (e) { return Promise.reject(e); } };
+  const Lan = base ? {
+    startServer: o => call('startServer', o), connect: o => call('connect', o), send: o => call('send', o),
+    closeConn: o => call('closeConn', o), stop: () => call('stop'),
+    addListener: (n, f) => { try { return Promise.resolve(base.addListener(n, f)); } catch (e) { return Promise.reject(e); } }
+  } : null;
 
   const wait = setInterval(() => {
-    if (typeof G !== 'undefined' && G.Net && G.DB && G.UI && G.Flow && G.Coop) { clearInterval(wait); init(); }
+    if (typeof G !== 'undefined' && G.Net && G.DB && G.UI && G.Flow && G.Coop && G.Social && G.Game) { clearInterval(wait); init(); }
   }, 250);
 
   function init() {
     const N = G.Net;
     const ready = !!(Lan && N.deliver && N.emitPeer);
-    const S = { on: false, host: false, started: false, seen: false, me: '', hostUid: '', members: [], addrs: [], msg: '',
+    const S = { on: false, host: false, started: false, seen: false, starting: false, me: '', hostUid: '', members: [], addrs: [], msg: '',
                 conn: new Map(), uidConn: new Map(), pending: new Map() };
+    // While a LAN match is starting or running, the game is shown a fake online room
+    const live = () => S.on && (S.starting || G.Coop.active);
 
     const el = (tag, css, text) => {
       const e = document.createElement(tag);
@@ -42,7 +53,7 @@
     };
     const gsend = (id, msg) => raw(id, { t: 'g', d: msg });
 
-    // ---- plug into the game's network layer ----
+    // ---- plug into the game ----
     if (ready) {
       const orig = { send: N.send, toHost: N.toHost, broadcast: N.broadcast, mode: N.mode, slow: N.slow, busy: N.busy, peers: N.peers };
       N.send = (to, msg) => { if (!S.on) return orig.send(to, msg); const id = S.uidConn.get(to); if (id) gsend(id, msg); };
@@ -55,14 +66,19 @@
       N.slow = u => (S.on ? false : orig.slow(u));
       N.busy = u => (S.on ? (S.pending.get(S.uidConn.get(u)) || 0) > 24 : orig.busy(u));
       N.peers = () => (S.on ? [...S.uidConn.keys()] : orig.peers());
-      const patch = (name, fn) => {
-        const d = Object.getOwnPropertyDescriptor(N, name);
-        Object.defineProperty(N, name, { configurable: true, enumerable: true,
-          get() { const v = fn(); return v === undefined ? (d && d.get ? d.get.call(N) : d && d.value) : v; } });
+      const patch = (obj, name, active, make) => {
+        const d = Object.getOwnPropertyDescriptor(obj, name);
+        Object.defineProperty(obj, name, { configurable: true, enumerable: true,
+          get() { return active() ? make() : (d && d.get ? d.get.call(obj) : d && d.value); } });
       };
-      patch('uid', () => (S.on ? S.me : undefined));
-      patch('isHost', () => (S.on ? S.host : undefined));
-      patch('hostUid', () => (S.on ? S.hostUid : undefined));
+      try {
+        patch(N, 'uid', () => S.on, () => S.me);
+        patch(N, 'isHost', () => S.on, () => S.host);
+        patch(N, 'hostUid', () => S.on, () => S.hostUid);
+        patch(G.Social, 'room', live, () => ({ id: 'lan', host: S.hostUid, isHost: S.host, open: !S.started, lost: false,
+                                               members: S.members.map(m => Object.assign({}, m)) }));
+        patch(G.Social, 'me', live, () => ({ uid: S.me, name: myInfo().name }));
+      } catch (e) { S.msg = 'Could not hook into the game: ' + e.message; }
 
       Lan.addListener('message', ev => onLine(ev.id, ev.data)).catch(() => {});
       Lan.addListener('closed', ev => {
@@ -111,7 +127,13 @@
         Lan.stop().catch(() => {});
         render();
       } else if (m.t === 'g') {
-        if (m.d && m.d.k === 'start') { S.started = true; hidePanel(); }
+        if (!S.hostUid) return;
+        if (m.d && m.d.k === 'start') {
+          S.started = true; hidePanel();
+          S.starting = true;
+          try { N.deliver(S.hostUid, m.d); } finally { S.starting = false; }
+          return;
+        }
         N.deliver(S.hostUid, m.d);
       } else if (m.t === 'bye') {
         lostHost();
@@ -140,7 +162,7 @@
     }
 
     function reset() {
-      S.on = false; S.host = false; S.started = false; S.seen = false;
+      S.on = false; S.host = false; S.started = false; S.seen = false; S.starting = false;
       S.members = []; S.addrs = []; S.hostUid = '';
       S.conn.clear(); S.uidConn.clear(); S.pending.clear();
     }
@@ -175,13 +197,16 @@
 
     function hostStart() {
       if (!S.host || S.members.length < 2 || S.started || G.Coop.active) return;
+      if (G.Game.state !== 'ui') { S.msg = 'Go back to the main menu first.'; render(); return; }
       if (!G.Flow || typeof G.Flow.startCoop !== 'function') { S.msg = 'This build has no co-op start function.'; render(); return; }
-      S.started = true;
-      const cfg = { k: 'start', seed: Math.floor(Math.random() * 2147483647), host: S.me,
+      S.started = true; S.msg = '';
+      const cfg = { k: 'start', seed: Math.floor(Math.random() * 1e6), host: S.me, hw: !!(G.Halloween && G.Halloween.on),
                     members: S.members.map(x => ({ uid: x.uid, name: x.name, dex: x.dex, shiny: !!x.shiny })) };
-      N.broadcast(cfg);
-      hidePanel();
-      G.Flow.startCoop(cfg);
+      S.starting = true;
+      try { N.broadcast(cfg); hidePanel(); G.Flow.startCoop(cfg); }
+      catch (e) { S.msg = 'Start failed: ' + ((e && e.message) || e); }
+      finally { S.starting = false; }
+      if (!G.Coop.active) { S.started = false; if (!S.msg) S.msg = 'The game did not start.'; showPanel(); }
     }
 
     function leave() {
@@ -231,7 +256,16 @@
     function render() {
       if (!panel || panel.style.display === 'none') return;
       body.textContent = '';
-      if (!native) { body.append(line('LAN co-op only works in the Android app.'), row(btn('Close', '#cfd8ee', hidePanel))); return; }
+      if (!native) {
+        let dbg = 'Capacitor: ' + (window.Capacitor ? 'found' : 'missing');
+        try {
+          const C = window.Capacitor;
+          if (C && C.getPlatform) dbg += ', platform: ' + C.getPlatform();
+          if (C && C.Plugins) dbg += ', plugins: ' + Object.keys(C.Plugins).join(',');
+        } catch (e) { /* nada */ }
+        body.append(line('LAN co-op only works in the Android app.'), line(dbg, 'font-size:12px;color:#b8c4e0;word-break:break-all'), row(btn('Close', '#cfd8ee', hidePanel)));
+        return;
+      }
       if (!ready) {
         body.append(line(!Lan ? 'The LAN plugin is not part of this build.' : 'js/net/net.js is missing the small edit (deliver, emitPeer).', 'color:#ff8a8a'), row(btn('Close', '#cfd8ee', hidePanel)));
         return;
@@ -259,7 +293,7 @@
       }
     }
 
-    // ---- menu button + rematch handling ----
+    // ---- menu button + back-to-lobby handling after a match ----
     function addMenuButton() {
       const list = document.querySelector('#scr-menu .menu-list');
       if (!list || document.getElementById('lan-menu')) return;
@@ -272,7 +306,7 @@
     setInterval(() => {
       if (S.on && S.started) {
         if (G.Coop.active) S.seen = true;
-        else if (S.seen) { S.started = false; S.seen = false; sendRoom(); }
+        else if (S.seen) { S.started = false; S.seen = false; sendRoom(); render(); }
       }
       addMenuButton();
     }, 500);

@@ -1,8 +1,6 @@
 name: Build APK
 on:
   workflow_dispatch:
-permissions:
-  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,7 +17,7 @@ jobs:
         run: |
           test -f dev.html || (echo "dev.html not found" && exit 1)
           mkdir www
-          rsync -a --exclude='.git' --exclude='.github' --exclude='www' --exclude='debug.keystore' --exclude='android-extra' ./ www/
+          rsync -a --exclude='.git' --exclude='.github' --exclude='www' --exclude='debug.keystore' --exclude='debug.keystore.b64' --exclude='android-extra' ./ www/
           cp dev.html www/index.html
           sed -i "s/script-src 'self'/script-src 'self' 'unsafe-inline'/" www/index.html
           sed -i 's#</body>#<script src="js/mods.js"></script><script src="js/lan.js"></script></body>#' www/index.html
@@ -27,14 +25,9 @@ jobs:
           grep -q 'js/lan.js' www/index.html || (echo "could not add lan.js" && exit 1)
       - name: Fixed signing key
         run: |
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            git config user.name "build-bot"
-            git config user.email "build-bot@users.noreply.github.com"
-            git add -f debug.keystore
-            git commit -m "Add signing key"
-            git push || echo "could not save the key to the repo"
-          fi
+          test -f debug.keystore.b64 || (echo "debug.keystore.b64 is missing from the repo root" && exit 1)
+          tr -d ' \r\n' < debug.keystore.b64 | base64 -d > debug.keystore
+          keytool -list -keystore debug.keystore -storepass android | grep -q androiddebugkey || (echo "keystore text is damaged" && exit 1)
           mkdir -p ~/.android
           cp debug.keystore ~/.android/debug.keystore
       - name: Set up Capacitor
@@ -52,6 +45,22 @@ jobs:
           D=$(dirname "$MAIN")
           cp android-extra/PsLanPlugin.java "$D/PsLanPlugin.java"
           cp android-extra/MainActivity.java "$D/MainActivity.java"
+      - name: Use the fixed key in Gradle
+        run: |
+          test -f android/app/build.gradle || (echo "android/app/build.gradle not found" && exit 1)
+          {
+            echo ""
+            echo "android {"
+            echo "    signingConfigs {"
+            echo "        debug {"
+            echo "            storeFile file('$GITHUB_WORKSPACE/debug.keystore')"
+            echo "            storePassword 'android'"
+            echo "            keyAlias 'androiddebugkey'"
+            echo "            keyPassword 'android'"
+            echo "        }"
+            echo "    }"
+            echo "}"
+          } >> android/app/build.gradle
       - name: Build APK
         run: |
           cd android

@@ -2,25 +2,6 @@
 <!-- GENERADO desde dev.html por tools/build.js: no editar a mano (se edita dev.html). -->
 <html lang="es">
 <head>
-     <script>
-  const originalFetch = window.fetch;
-  window.fetch = async (input, init) => {
-      const url = typeof input === 'string' ? input : input.url;
-      if (url.includes('api.pokerogue.net')) {
-          if (url.includes('/account/login') || url.includes('/account/register')) return new Response(JSON.stringify({ token: "offline", username: "Player" }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-          if (url.includes('/savedata/update')) {
-              localStorage.setItem('pr_save_' + JSON.parse(init.body).slotId, init.body);
-              return new Response(JSON.stringify({ success: true }), { status: 200 });
-          }
-          if (url.includes('/savedata/get')) {
-              const slot = new URLSearchParams(url.split('?')[1]).get('slotId') || '0';
-              return new Response(localStorage.getItem('pr_save_' + slot) || '{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
-          }
-          if (url.includes('/userdata/get')) return new Response(localStorage.getItem('pr_userdata') || '{"settings":{}}', { status: 200 });
-      }
-      return originalFetch(input, init);
-  };
-</script>
 <meta charset="utf-8">
 <!-- Seguridad (18-10-2026): sólo se ejecutan los scripts del juego, de Firebase
      y de Google (inicio de sesión). Nada metido en la página (onerror=, etiquetas script

@@ -20,7 +20,7 @@ jobs:
           rsync -a --exclude='.git' --exclude='.github' --exclude='www' --exclude='debug.keystore' --exclude='debug.keystore.b64' --exclude='android-extra' ./ www/
           cp dev.html www/index.html
           sed -i "s/script-src 'self'/script-src 'self' 'unsafe-inline'/" www/index.html
-          sed -i 's#</body>#<script src="js/mods.js"></script><script src="js/lan.js"></script></body>#' www/index.html
+          sed -i 's#</body>#<script src="js/mods.js"></script><script src="js/lan.js"></script><script src="js/extras.js"></script></body>#' www/index.html
           grep -q 'js/mods.js' www/index.html || (echo "could not add mods.js" && exit 1)
           grep -q 'js/lan.js' www/index.html || (echo "could not add lan.js" && exit 1)
       - name: Fixed signing key

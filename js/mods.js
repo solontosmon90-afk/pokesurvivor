@@ -1,17 +1,29 @@
-/* mods.js: Kecleon shop boosts + passive, auto level-up, backup/restore (local copy) */
+/* mods.js: shop boosts + passive, game modes, auto level-up, backup/restore (local copy) */
 (() => {
   // ---- tune the economy here ----
-  const BOOST_MAX = 5;            // levels of the Coin and EXP boosts
+  const BOOST_MAX = 9;            // levels of the Coin and EXP boosts (level n = x(n+1), so 9 = x10)
   const BOOST_PRICE = 50000;      // price of EACH level of those two
   const EDGE_MAX = 10;            // levels of Predator's Edge
   const EDGE_BASE = 30000;        // Predator's Edge: level n costs EDGE_BASE x n
-  const CRIT_PER_LEVEL = 0.10;    // +10% crit damage per level
+  const CRIT_PER_LEVEL = 0.10;    // +10% crit damage per level (on top of the normal x1.5)
+  const CRIT_CHANCE_PER_LEVEL = 0.01;  // +1% crit chance per level (0 = off; crits need chance to ever happen)
   const STEAL_PER_LEVEL = 0.01;   // +1% lifesteal per level
-  const STEAL_CAP = 0.05;         // one hit never heals more than 5% of your max HP
-  const LS_AUTO = 'ps.autolvl';
+  const STEAL_CAP_PER_SEC = 0.15; // lifesteal never heals more than 15% of max HP per second
+  const LS_AUTO = 'ps.autolvl', LS_MODE = 'ps.mode';
+
+  // ---- game modes (solo only; LAN co-op always plays Normal) ----
+  const MODES = {
+    normal: { key: 'normal', name: 'Normal', desc: 'The standard game.', xp: 1, coin: 1 },
+    horde: { key: 'horde', name: 'Horde', desc: 'Waves of far more enemies, each much weaker. +25% coins and EXP.',
+             xp: 1.25, coin: 1.25, hp: 0.55, dmg: 0.8 },
+    glass: { key: 'glass', name: 'Glass Cannon', desc: '60% less HP, +80% damage, +10% speed, +10% crit chance. +50% coins and EXP.',
+             xp: 1.5, coin: 1.5 }
+  };
+  const MODE_ORDER = ['normal', 'horde', 'glass'];
 
   const wait = setInterval(() => {
-    if (typeof G !== 'undefined' && G.DB && G.Pickups && G.LevelUp && G.UI && G.RunUI && G.ShopUI && G.Enemy && G.Game) {
+    if (typeof G !== 'undefined' && G.DB && G.Pickups && G.LevelUp && G.UI && G.RunUI && G.ShopUI &&
+        G.Enemy && G.Enemies && G.Player && G.Game && G.Spawner && G.Coop) {
       clearInterval(wait); init();
     }
   }, 200);
@@ -36,22 +48,33 @@
       return Math.max(0, Math.min(MAXES[id], v));
     };
 
-    // ---- EXP boost: multiplies the XP orbs enemies drop ----
+    // ---- modes ----
+    let modeKey = 'normal';
+    try { const v = localStorage.getItem(LS_MODE); if (MODES[v]) modeKey = v; } catch (e) { /* nada */ }
+    let runMode = 'normal';     // the mode this run started with
+    const activeMode = () => (G.Coop.active ? null : MODES[runMode] || null);
+    const coinFactor = () => {
+      const m = G.Game.state !== 'ui' ? activeMode() : null;
+      return (1 + lvl('coins')) * (m ? m.coin : 1);
+    };
+
+    // ---- EXP: boost x mode ----
     const origXp = G.Pickups.dropXp;
     G.Pickups.dropXp = function (x, y, value) {
       const a = Array.prototype.slice.call(arguments);
-      a[2] = value * (1 + lvl('xp'));
+      const m = activeMode();
+      a[2] = value * (1 + lvl('xp')) * (m ? m.xp : 1);
       return origXp.apply(this, a);
     };
 
-    // ---- Coin boost: every coin gain that gets saved is multiplied ----
+    // ---- coins: boost x mode, applied to every coin gain that gets saved ----
     let lastRef = null, lastCoins = 0;
     const origCommit = G.DB.commit;
     G.DB.commit = function () {
       const s = G.DB.save;
-      if (s && s === lastRef) {
-        const k = lvl('coins');
-        if (k > 0 && s.coins > lastCoins) s.coins += (s.coins - lastCoins) * k;
+      if (s && s === lastRef && s.coins > lastCoins) {
+        const f = coinFactor();
+        if (f > 1) s.coins += Math.round((s.coins - lastCoins) * (f - 1));
       }
       const r = origCommit.apply(this, arguments);
       const s2 = G.DB.save;
@@ -65,36 +88,95 @@
     }
     const origOver = G.RunUI.showOver;
     G.RunUI.showOver = function (r, onBack) {
-      const k = lvl('coins');
-      if (k > 0 && r && r.coins) r = Object.assign({}, r, { coins: r.coins * (1 + k), breakdown: (r.breakdown || '') + ' \u00b7 \u00d7' + (1 + k) + ' boost' });
+      const f = coinFactor();
+      if (f > 1 && r && r.coins) r = Object.assign({}, r, { coins: Math.round(r.coins * f), breakdown: (r.breakdown || '') + ' \u00b7 \u00d7' + (Math.round(f * 100) / 100) + ' bonus' });
       return origOver.call(this, r, onBack);
     };
 
-    // ---- Predator's Edge: crit damage + lifesteal on your direct hits ----
-    let netDepth = 0, inEnemyUpdate = 0;
-    if (G.Net && typeof G.Net.deliver === 'function') {
-      const od = G.Net.deliver;
-      G.Net.deliver = function () { netDepth++; try { return od.apply(this, arguments); } finally { netDepth--; } };
-    }
-    const proto = G.Enemy.prototype;
-    const origUpd = proto.update;
-    proto.update = function () { inEnemyUpdate++; try { return origUpd.apply(this, arguments); } finally { inEnemyUpdate--; } };
-    const origHurt = proto.hurt;
-    proto.hurt = function (amount, color, dirX, dirY, knock, eff) {
+    // ---- mode: enemy strength (Horde) ----
+    const origScale = G.Enemies.scale;
+    G.Enemies.scale = function () {
+      const sc = origScale.apply(this, arguments);
+      const m = activeMode();
+      if (!m || (!m.hp && !m.dmg)) return sc;
+      return Object.assign({}, sc, { hp: sc.hp * (m.hp || 1), dmg: sc.dmg * (m.dmg || 1) });
+    };
+
+    // ---- Predator's Edge: crit damage + crit chance + lifesteal ----
+    // Crit damage: your crits already reach the enemy flagged as 'crit'; make them hit harder
+    const origHurt = G.Enemy.prototype.hurt;
+    G.Enemy.prototype.hurt = function (amount, color, dirX, dirY, knock, eff) {
       const k = lvl('edge');
-      if (!k || netDepth > 0 || inEnemyUpdate > 0 || this.dead) return origHurt.apply(this, arguments);
-      const a = Array.prototype.slice.call(arguments);
-      if (eff === 'crit') a[0] = amount * (1 + CRIT_PER_LEVEL * k);
-      const before = this.hp + (this.shield || 0);
-      const r = origHurt.apply(this, a);
+      if (k > 0 && eff === 'crit' && !this.dead) {
+        const a = Array.prototype.slice.call(arguments);
+        a[0] = amount * (1 + CRIT_PER_LEVEL * k);
+        return origHurt.apply(this, a);
+      }
+      return origHurt.apply(this, arguments);
+    };
+    // Lifesteal: onDealt runs for every hit YOU land (never for teammates' hits, burns or lava)
+    const origDealt = G.Player.prototype.onDealt;
+    G.Player.prototype.onDealt = function (dmg) {
+      origDealt.apply(this, arguments);
+      const k = lvl('edge');
+      if (!k || this.dead || this.remote || !(dmg > 0)) return;
+      const now = performance.now();
+      if (!this._lsAt || now - this._lsAt >= 1000) { this._lsAt = now; this._lsGot = 0; }
+      const room = this.maxHp * STEAL_CAP_PER_SEC - this._lsGot;
+      const heal = Math.min(dmg * STEAL_PER_LEVEL * k, room, this.maxHp - this.hp);
+      if (heal <= 0) return;
+      this._lsGot += heal;
+      this.hp += heal;
+      this._lsShow = (this._lsShow || 0) + heal;
+      if (now - (this._lsTextAt || 0) > 800 && this._lsShow >= 1) {
+        G.FX.dmgText(this.x, this.y - this.bodyH - 6, '+' + Math.round(this._lsShow), '#5fe08a');
+        this._lsShow = 0; this._lsTextAt = now;
+      }
+    };
+
+    // ---- start of every run: Edge crit chance + the chosen mode ----
+    let lastBurst = 0;
+    const origStart = G.Game.startRun;
+    G.Game.startRun = function () {
+      const r = origStart.apply(this, arguments);
       const pl = G.Game.player;
-      if (pl && !pl.dead && pl.maxHp > 0) {
-        const dealt = Math.max(0, Math.min(a[0], before));
-        const heal = Math.min(dealt * STEAL_PER_LEVEL * k, pl.maxHp * STEAL_CAP);
-        if (heal > 0) pl.hp = Math.min(pl.maxHp, pl.hp + heal);
+      runMode = G.Coop.active ? 'normal' : modeKey;
+      lastBurst = 0;
+      if (pl) {
+        const k = lvl('edge');
+        if (k > 0 && CRIT_CHANCE_PER_LEVEL > 0) pl.critChance = Math.min(1, (pl.critChance || 0) + CRIT_CHANCE_PER_LEVEL * k);
+        if (runMode === 'glass') {
+          pl.maxHp = Math.max(20, Math.round(pl.maxHp * 0.4));
+          pl.hp = pl.maxHp;
+          pl.atkMul *= 1.8;
+          pl.spdMul *= 1.1;
+          pl.critChance = Math.min(1, (pl.critChance || 0) + 0.10);
+        }
+        if (runMode !== 'normal') G.Spawner.say('Mode: ' + MODES[runMode].name, 3, true);
       }
       return r;
     };
+
+    // ---- mode button (main menu, under Play) ----
+    function paintMode(b) {
+      const m = MODES[modeKey];
+      b.textContent = '';
+      b.append('Mode: ' + m.name, el('small', '', m.desc));
+    }
+    function ensureModeButton() {
+      const list = document.querySelector('#scr-menu .menu-list');
+      if (list && !document.getElementById('mode-menu')) {
+        const b = el('button'); b.id = 'mode-menu'; b.type = 'button'; b.className = 'menu-item';
+        b.addEventListener('click', e => {
+          e.stopPropagation();
+          modeKey = MODE_ORDER[(MODE_ORDER.indexOf(modeKey) + 1) % MODE_ORDER.length];
+          try { localStorage.setItem(LS_MODE, modeKey); } catch (x) { /* nada */ }
+          paintMode(b);
+        });
+        paintMode(b);
+        list.insertBefore(b, list.children[1] || null);
+      }
+    }
 
     // ---- Kecleon shop section ----
     const CARDS = [
@@ -104,8 +186,10 @@
         desc: l => 'Multiplies the experience you collect in runs. Now \u00d7' + (1 + l) + (l < BOOST_MAX ? ', next \u00d7' + (2 + l) : '') + '.' },
       { id: 'edge', icon: 'fist', title: 'Predator\u2019s Edge', max: EDGE_MAX, price: l => EDGE_BASE * (l + 1),
         desc: l => {
-          const c = n => Math.round(CRIT_PER_LEVEL * 100 * n), s = n => Math.round(STEAL_PER_LEVEL * 1000 * n) / 10;
-          return 'Crit damage +' + c(l) + '%, lifesteal ' + s(l) + '%' + (l < EDGE_MAX ? '. Next: +' + c(l + 1) + '% / ' + s(l + 1) + '%' : '') + '.';
+          const c = n => Math.round(CRIT_PER_LEVEL * 100 * n), s = n => Math.round(STEAL_PER_LEVEL * 1000 * n) / 10,
+                h = n => Math.round(CRIT_CHANCE_PER_LEVEL * 100 * n);
+          return 'Crit damage +' + c(l) + '%, crit chance +' + h(l) + '%, lifesteal ' + s(l) + '%' +
+                 (l < EDGE_MAX ? '. Next: +' + c(l + 1) + '% / +' + h(l + 1) + '% / ' + s(l + 1) + '%' : '') + '.';
         } }
     ];
     function buy(id) {
@@ -258,9 +342,17 @@
     let lastTry = 0;
     setInterval(() => {
       ensureToggle();
+      ensureModeButton();
       shopSection();
       trackCoins();
       addBackupButton();
+
+      // Horde: keep sending waves (not during boss fights, rifts or the final trial)
+      if (runMode === 'horde' && G.Game.state === 'playing' && !G.Coop.active && !G.Rift.inArena && !G.Judgment.active && !G.EnemyMgr.bossAlive()) {
+        const t = G.Game.st.time;
+        if (t - lastBurst >= 3) { lastBurst = t; G.Spawner.burst(2 + Math.floor(t / 120)); }
+      }
+
       if (!auto) return;
       const now = Date.now();
       if (now - lastTry < 500) return;

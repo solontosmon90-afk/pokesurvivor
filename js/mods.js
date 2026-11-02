@@ -2,7 +2,8 @@
 (() => {
   // ---- tune the economy here ----
   const BOOST_MAX = 9;            // levels of the Coin and EXP boosts (level n = x(n+1), so 9 = x10)
-  const BOOST_PRICE = 50000;      // price of EACH level of those two
+  const BOOST_PRICE = 50000;      // price of level 1 of those two
+  const BOOST_STEP = 20000;       // every further level costs this much more than the one before
   const EDGE_MAX = 10;            // levels of Predator's Edge
   const EDGE_BASE = 30000;        // Predator's Edge: level n costs EDGE_BASE x n
   const CRIT_PER_LEVEL = 0.10;    // +10% crit damage per level (on top of the normal x1.5)
@@ -12,14 +13,26 @@
   const LS_AUTO = 'ps.autolvl', LS_MODE = 'ps.mode';
 
   // ---- game modes (solo only; LAN co-op always plays Normal) ----
+  // xp / coin: reward multipliers. hp / dmg / spd: enemy multipliers (bosses get the square root of hp and dmg).
+  // wave: [seconds between extra waves, base size, seconds per +1 enemy]. player: changes to your own Pokemon.
   const MODES = {
-    normal: { key: 'normal', name: 'Normal', desc: 'The standard game.', xp: 1, coin: 1 },
-    horde: { key: 'horde', name: 'Horde', desc: 'Waves of far more enemies, each much weaker. +25% coins and EXP.',
-             xp: 1.25, coin: 1.25, hp: 0.55, dmg: 0.8 },
-    glass: { key: 'glass', name: 'Glass Cannon', desc: '60% less HP, +80% damage, +10% speed, +10% crit chance. +50% coins and EXP.',
-             xp: 1.5, coin: 1.5 }
+    normal: { name: 'Normal', desc: 'The standard game.', xp: 1, coin: 1 },
+    horde: { name: 'Horde', desc: 'Waves of far more enemies, each much weaker. +25% coins and EXP.',
+             xp: 1.25, coin: 1.25, hp: 0.55, dmg: 0.8, wave: [3, 2, 120] },
+    glass: { name: 'Glass Cannon', desc: '60% less HP, +80% damage, +10% speed, +10% crit chance. +50% coins and EXP.',
+             xp: 1.5, coin: 1.5, player: { hp: 0.4, atk: 1.8, spd: 1.1, crit: 0.1 } },
+    nightmare: { name: 'Nightmare', desc: 'Enemies have 2x HP, 1.5x damage and move 10% faster. Rewards x2.',
+                 xp: 2, coin: 2, hp: 2, dmg: 1.5, spd: 1.1 },
+    tide: { name: 'Endless Tide', desc: 'A new wave every 2 s of fast enemies (80% HP, 1.3x damage). Rewards x2.5.',
+            xp: 2.5, coin: 2.5, hp: 0.8, dmg: 1.3, spd: 1.15, wave: [2, 3, 90] },
+    laststand: { name: 'Last Stand', desc: 'You have half HP; enemies have 1.6x HP and 1.6x damage. Rewards x3.',
+                 xp: 3, coin: 3, hp: 1.6, dmg: 1.6, player: { hp: 0.5 } },
+    titan: { name: 'Titan Hunt', desc: 'Enemies have 3x HP, 2x damage and move 20% faster; you have 80% HP. Rewards x4.',
+             xp: 4, coin: 4, hp: 3, dmg: 2, spd: 1.2, player: { hp: 0.8 } },
+    inferno: { name: 'Inferno', desc: 'Brutal: 4x HP, 2.5x damage, +30% speed, constant waves; you have 60% HP but +30% damage. Rewards x6.',
+               xp: 6, coin: 6, hp: 4, dmg: 2.5, spd: 1.3, wave: [2, 4, 75], player: { hp: 0.6, atk: 1.3 } }
   };
-  const MODE_ORDER = ['normal', 'horde', 'glass'];
+  const MODE_ORDER = ['normal', 'horde', 'glass', 'nightmare', 'tide', 'laststand', 'titan', 'inferno'];
 
   const wait = setInterval(() => {
     if (typeof G !== 'undefined' && G.DB && G.Pickups && G.LevelUp && G.UI && G.RunUI && G.ShopUI &&
@@ -93,14 +106,22 @@
       return origOver.call(this, r, onBack);
     };
 
-    // ---- mode: enemy strength (Horde) ----
+    // ---- modes: enemy strength ----
+    const mulSc = (sc, k) => Object.assign({}, sc, { hp: sc.hp * (k.hp || 1), dmg: sc.dmg * (k.dmg || 1), spd: sc.spd * (k.spd || 1) });
     const origScale = G.Enemies.scale;
     G.Enemies.scale = function () {
-      const sc = origScale.apply(this, arguments);
-      const m = activeMode();
-      if (!m || (!m.hp && !m.dmg)) return sc;
-      return Object.assign({}, sc, { hp: sc.hp * (m.hp || 1), dmg: sc.dmg * (m.dmg || 1) });
+      const sc = origScale.apply(this, arguments), m = activeMode();
+      if (!m || !(m.hp || m.dmg || m.spd) || !sc || typeof sc !== 'object') return sc;
+      return mulSc(sc, m);
     };
+    if (typeof G.Enemies.bossScale === 'function') {
+      const origBoss = G.Enemies.bossScale;
+      G.Enemies.bossScale = function () {
+        const sc = origBoss.apply(this, arguments), m = activeMode();
+        if (!m || !(m.hp || m.dmg || m.spd) || !sc || typeof sc !== 'object') return sc;
+        return mulSc(sc, { hp: Math.sqrt(m.hp || 1), dmg: Math.sqrt(m.dmg || 1), spd: m.spd || 1 });
+      };
+    }
 
     // ---- Predator's Edge: crit damage + crit chance + lifesteal ----
     // Crit damage: your crits already reach the enemy flagged as 'crit'; make them hit harder
@@ -145,12 +166,12 @@
       if (pl) {
         const k = lvl('edge');
         if (k > 0 && CRIT_CHANCE_PER_LEVEL > 0) pl.critChance = Math.min(1, (pl.critChance || 0) + CRIT_CHANCE_PER_LEVEL * k);
-        if (runMode === 'glass') {
-          pl.maxHp = Math.max(20, Math.round(pl.maxHp * 0.4));
-          pl.hp = pl.maxHp;
-          pl.atkMul *= 1.8;
-          pl.spdMul *= 1.1;
-          pl.critChance = Math.min(1, (pl.critChance || 0) + 0.10);
+        const pm = MODES[runMode] && MODES[runMode].player;
+        if (pm) {
+          if (pm.hp) { pl.maxHp = Math.max(20, Math.round(pl.maxHp * pm.hp)); pl.hp = pl.maxHp; }
+          if (pm.atk) pl.atkMul *= pm.atk;
+          if (pm.spd) pl.spdMul *= pm.spd;
+          if (pm.crit) pl.critChance = Math.min(1, (pl.critChance || 0) + pm.crit);
         }
         if (runMode !== 'normal') G.Spawner.say('Mode: ' + MODES[runMode].name, 3, true);
       }
@@ -180,9 +201,9 @@
 
     // ---- Kecleon shop section ----
     const CARDS = [
-      { id: 'coins', icon: 'coin', title: 'Coin Boost', max: BOOST_MAX, price: () => BOOST_PRICE,
+      { id: 'coins', icon: 'coin', title: 'Coin Boost', max: BOOST_MAX, price: l => BOOST_PRICE + BOOST_STEP * l,
         desc: l => 'Multiplies every coin you earn. Now \u00d7' + (1 + l) + (l < BOOST_MAX ? ', next \u00d7' + (2 + l) : '') + '.' },
-      { id: 'xp', icon: 'book', title: 'EXP Boost', max: BOOST_MAX, price: () => BOOST_PRICE,
+      { id: 'xp', icon: 'book', title: 'EXP Boost', max: BOOST_MAX, price: l => BOOST_PRICE + BOOST_STEP * l,
         desc: l => 'Multiplies the experience you collect in runs. Now \u00d7' + (1 + l) + (l < BOOST_MAX ? ', next \u00d7' + (2 + l) : '') + '.' },
       { id: 'edge', icon: 'fist', title: 'Predator\u2019s Edge', max: EDGE_MAX, price: l => EDGE_BASE * (l + 1),
         desc: l => {
@@ -347,10 +368,11 @@
       trackCoins();
       addBackupButton();
 
-      // Horde: keep sending waves (not during boss fights, rifts or the final trial)
-      if (runMode === 'horde' && G.Game.state === 'playing' && !G.Coop.active && !G.Rift.inArena && !G.Judgment.active && !G.EnemyMgr.bossAlive()) {
-        const t = G.Game.st.time;
-        if (t - lastBurst >= 3) { lastBurst = t; G.Spawner.burst(2 + Math.floor(t / 120)); }
+      // Wave modes: keep sending extra waves (not during boss fights, rifts or the final trial)
+      const md = MODES[runMode];
+      if (md && md.wave && G.Game.state === 'playing' && !G.Coop.active && !G.Rift.inArena && !G.Judgment.active && !G.EnemyMgr.bossAlive()) {
+        const t = G.Game.st.time, w = md.wave;
+        if (t - lastBurst >= w[0]) { lastBurst = t; G.Spawner.burst(w[1] + Math.floor(t / w[2])); }
       }
 
       if (!auto) return;
